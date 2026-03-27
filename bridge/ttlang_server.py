@@ -340,10 +340,20 @@ class TTLangServer:
         top_k = min(10, map_tiles)
         top_tiles = torch.topk(final_scores[:map_tiles], top_k).indices.tolist()
 
+        # Disaster epicenter as a map tile index (for C-side Pollution placement)
+        d_active = 1 if disaster_stats['active'] else 0
+        d_epi_tile = 0
+        if d_active:
+            epi_px, epi_py = disaster_stats['epicenter']   # (cx, cy) in 512×512
+            from disaster_kernel import DISASTER_GRID_SIZE as _DGS
+            ex = epi_px * w // _DGS
+            ey = epi_py * h // _DGS
+            d_epi_tile = ey * w + ex
+
         # Bundle both stat dicts for the storyteller
         weather_stats['disaster'] = disaster_stats
 
-        return scores_flat, top_tiles, kernel_ms, weather_stats
+        return scores_flat, top_tiles, kernel_ms, weather_stats, d_active, d_epi_tile
 
     # ── terrain_event ──────────────────────────────────────────────────────────
 
@@ -510,7 +520,7 @@ class TTLangServer:
                 map_tiles = w * h
                 print(f"\n>>> TURN {turn}  P300C Blackhole  {map_tiles} tiles",
                       flush=True)
-                scores, top, ms, weather_stats = self._tile_score(
+                scores, top, ms, weather_stats, d_active, d_epi = self._tile_score(
                     w, h, food, shields, trade, turn)
                 top3_scores = [round(scores[i], 2) for i in top[:3]]
                 print(f"  [SCORING  ] {w}x{h} map  4 TT passes  {ms:.2f}ms total"
@@ -519,7 +529,9 @@ class TTLangServer:
                 top_tiles_xy = [(i % w, i // w) for i in top[:5]]
                 self.storyteller.narrate_turn(turn, w, h, weather_stats, top_tiles_xy)
                 return {"status": "ok", "scores": scores,
-                        "top_tiles": top, "kernel_ms": ms}
+                        "top_tiles": top, "kernel_ms": ms,
+                        "disaster_active": d_active,
+                        "disaster_epi_tile": d_epi}
 
             elif cmd == "terrain_event":
                 turn = int(req.get("turn", 1))

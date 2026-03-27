@@ -7,14 +7,14 @@
 # Map: use RANDOM generator so TT-Lang height_map.c patch fires
 set generator RANDOM
 
-# Size 8 = ~44x88 map → 3872 tiles, good land for 5 AI civs
-set size 8
+# Size 9 = ~48x96 map → 4608 tiles — bigger world, more room to roam
+set size 9
 
 # 5 AI opponents, no human needed
 set aifill 4
 
-# Faster turns so you can watch AI move
-set timeout 15
+# Fast turns so you can watch AI expand in real time
+set timeout 3
 
 # AI skill — HARD so they actually pursue TT-scored land aggressively
 set skill hard
