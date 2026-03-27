@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# Generated output
+output/*.npy
+output/*.json
+output/*.png
+generated/
+
+# TT-Lang / TTNN caches
+.cache/
+tt_build/
+*.profile
+
+# Logs
+*.log
+/tmp/
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Large binaries / assets
+*.mkv
+*.mp4
+*.avi

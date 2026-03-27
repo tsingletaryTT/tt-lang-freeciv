@@ -1,0 +1,26 @@
+# FreeCiv server initialization script for TT-Lang AI demo
+# Feed to freeciv-server with --read ttlang_game.serv
+#
+# This sets up a solo game with 5 AI opponents so you can watch TT hardware
+# drive their decision-making in real time each turn.
+
+# Map: use RANDOM generator so TT-Lang height_map.c patch fires
+set generator RANDOM
+
+# Size 8 = ~44x88 map → 3872 tiles, good land for 5 AI civs
+set size 8
+
+# 5 AI opponents, no human needed
+set aifill 4
+
+# Faster turns so you can watch AI move
+set timeout 15
+
+# AI skill — HARD so they actually pursue TT-scored land aggressively
+set skill hard
+
+# Start immediately (no waiting for human players beyond player 1)
+set minplayers 0
+
+# Auto-start: no human player required, AI plays immediately
+start
