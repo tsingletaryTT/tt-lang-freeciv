@@ -39,7 +39,7 @@ from height_map_simple import scale_height_map
 
 TILE_SIZE  = 32
 THRESHOLD  = 900.0   # tiles above this value (out of 1000) get a resource
-EVENT_EXTRAS = ["Gold", "Oil", "Pheasant", "Fish"]
+EVENT_EXTRAS = ["Gold", "Coal", "Pheasant", "Fish"]
 
 
 def _tile_aligned(n: int) -> int:

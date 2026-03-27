@@ -22,5 +22,17 @@ set skill hard
 # Start immediately (no waiting for human players beyond player 1)
 set minplayers 0
 
+# Reveal the full map at game start so the observer can see all activity
+set revealmap START
+
+# No barbarians — keeps AI focus on expansion, not defense
+set barbarians NONE
+
+# Unit wait time: 0 so AI moves appear as fast as possible
+set unitwaittime 0
+
+# Defeat condition: none — let the game run forever for the demo
+set endvictory 0
+
 # Auto-start: no human player required, AI plays immediately
 start
