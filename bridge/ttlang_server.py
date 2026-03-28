@@ -67,6 +67,9 @@ from disaster_kernel        import DisasterModel, DISASTER_GRID_SIZE
 from city_influence_kernel  import CityInfluenceModel
 from pathfind_kernel        import PathfindModel
 from unit_eval_kernel       import UnitEvalModel
+from threat_field_kernel    import ThreatFieldModel
+from city_prod_kernel       import CityProdModel
+from combat_pos_kernel      import CombatPosModel
 from storyteller            import Storyteller
 
 print("[ttlang-server] TT modules loaded.", flush=True)
@@ -142,9 +145,13 @@ class TTLangServer:
         self.storyteller     = Storyteller()
         self.disaster        = None   # initialised after device is open
         self.city_model      = None   # initialised after device is open
-        self.pathfind_model  = None   # initialised after device is open
-        self.unit_eval_model = None   # initialised after device is open
-        self._last_pathfield = []     # cached for unit_eval to reuse same turn
+        self.pathfind_model   = None   # initialised after device is open
+        self.unit_eval_model  = None   # initialised after device is open
+        self.threat_model     = None   # initialised after device is open
+        self.city_prod_model  = None   # initialised after device is open
+        self.combat_pos_model = None   # initialised after device is open
+        self._last_pathfield    = []   # cached for unit_eval to reuse same turn
+        self._last_threat_field = []   # cached for combat_pos to reuse same turn
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -153,8 +160,11 @@ class TTLangServer:
         self.device          = ttnn.open_device(device_id=0)
         self.disaster        = DisasterModel(self.device)
         self.city_model      = CityInfluenceModel(self.device)
-        self.pathfind_model  = PathfindModel(self.device)
-        self.unit_eval_model = UnitEvalModel(self.device)
+        self.pathfind_model   = PathfindModel(self.device)
+        self.unit_eval_model  = UnitEvalModel(self.device)
+        self.threat_model     = ThreatFieldModel(self.device)
+        self.city_prod_model  = CityProdModel(self.device)
+        self.combat_pos_model = CombatPosModel(self.device)
         print("[ttlang-server] Device open.", flush=True)
 
     def close_device(self):
@@ -177,6 +187,15 @@ class TTLangServer:
             dummy_units = [{'id': 1, 'tile': 0, 'is_settler': 1}]
             dummy_pf    = [0.5] * (32 * 64)
             self.unit_eval_model.evaluate(dummy_units, dummy_pf, 32, 64)
+            # Warm up threat_field, city_prod, combat_pos
+            dummy_enemy  = [{'tile_idx': 5, 'strength': 1.0}]
+            dummy_threat, _ = self.threat_model.compute(dummy_enemy, 32, 64)
+            self._last_threat_field = dummy_threat
+            dummy_cities = [{'tile_idx': 0, 'food': 2.0, 'shields': 1.0,
+                             'trade': 1.0, 'pop': 3.0, 'mil_units_nearby': 0}]
+            self.city_prod_model.score(dummy_cities, dummy_threat, 32, 64)
+            dummy_own = [{'id': 1, 'tile': 10, 'moves': 2, 'strength': 2.0}]
+            self.combat_pos_model.position(dummy_own, dummy_threat, 32, 64)
             # Skip gen_civs warm-up — sprite rendering takes minutes and is
             # only needed on-demand, not at server startup.
         print("[ttlang-server] Warm-up complete. Kernels compiled and cached.",
@@ -623,6 +642,65 @@ class TTLangServer:
                       f"128 Tensix cores  {ms:.2f}ms  "
                       f">> {len(recs)} recommendations", flush=True)
                 return {"status": "ok", "recommendations": recs, "kernel_ms": ms}
+
+            elif cmd == "city_prod":
+                # City production priority scoring.
+                # Runs ThreatFieldModel + CityProdModel on TT hardware.
+                # Also caches the threat field for combat_pos later this turn.
+                turn    = int(req.get("turn", 1))
+                cities  = req.get("cities", [])
+                enemy   = req.get("enemy",  [])
+
+                # Normalize compact keys sent from C: t→tile_idx, f→food, etc.
+                cities_norm = [{
+                    'tile_idx':         int(c.get('t',  c.get('tile_idx',  0))),
+                    'food':             float(c.get('f', c.get('food',     2.0))),
+                    'shields':          float(c.get('s', c.get('shields',  1.0))),
+                    'trade':            float(c.get('r', c.get('trade',    1.0))),
+                    'pop':              float(c.get('p', c.get('pop',      1.0))),
+                    'mil_units_nearby': int(c.get('m',  c.get('mil_units_nearby', 0))),
+                } for c in cities]
+                enemy_norm = [
+                    {'tile_idx': int(e.get('t',   e.get('tile_idx', 0))),
+                     'strength': float(e.get('s', e.get('strength', 1.0)))}
+                    for e in enemy
+                ]
+
+                # Run threat field diffusion; cache for combat_pos this turn
+                threat, threat_stats = self.threat_model.compute(enemy_norm, w, h)
+                self._last_threat_field = threat
+
+                recs, ms = self.city_prod_model.score(cities_norm, threat, w, h)
+                n_mil  = sum(1 for r in recs if r['prod_cat'] == 0 and r['urgency'] > 0.7)
+                n_grw  = sum(1 for r in recs if r['prod_cat'] == 1 and r['urgency'] > 0.7)
+                n_sci  = sum(1 for r in recs if r['prod_cat'] == 2 and r['urgency'] > 0.7)
+                print(f"  [CITY-PROD] {len(cities)} cities  "
+                      f"128 Tensix cores  {ms:.2f}ms  "
+                      f">> mil={n_mil} grw={n_grw} sci={n_sci} urgent",
+                      flush=True)
+                return {"status": "ok", "recommendations": recs, "kernel_ms": ms}
+
+            elif cmd == "combat_pos":
+                # Combat positioning: advance / hold / retreat orders.
+                # Reuses threat field cached from city_prod earlier this turn.
+                # Must be called AFTER city_prod in the same turn.
+                turn      = int(req.get("turn", 1))
+                own_units = req.get("own_units", [])
+                threat    = self._last_threat_field
+                if not threat:
+                    print("[ttlang-server] combat_pos: no threat field cached "
+                          "(city_prod must run first)", flush=True)
+                    return {"status": "ok", "orders": [], "kernel_ms": 0.0}
+
+                orders, ms = self.combat_pos_model.position(own_units, threat, w, h)
+                n_adv  = sum(1 for o in orders if o['action'] == 'advance')
+                n_ret  = sum(1 for o in orders if o['action'] == 'retreat')
+                n_hold = sum(1 for o in orders if o['action'] == 'hold')
+                print(f"  [COMBAT-POS] {len(own_units)} units  "
+                      f"128 Tensix cores  {ms:.2f}ms  "
+                      f">> adv={n_adv} ret={n_ret} hold={n_hold}",
+                      flush=True)
+                return {"status": "ok", "orders": orders, "kernel_ms": ms}
 
             elif cmd == "ping":
                 return {"status": "ok", "message": "pong"}
