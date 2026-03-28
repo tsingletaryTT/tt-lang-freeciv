@@ -62,9 +62,11 @@ import torch
 import ttnn
 from height_map_simple  import generate_height_map_cpu, scale_height_map, GRANULARITY as _SCALE_GRANULARITY
 from height_map_smooth  import smooth_height_map, to_device_half, zeros_like_on_device, GRANULARITY as _SMOOTH_GRANULARITY
-from weather_kernel     import compute_weather, sample_weather_to_map, WEATHER_GRID_SIZE
+from weather_kernel         import compute_weather, sample_weather_to_map, WEATHER_GRID_SIZE
 from disaster_kernel        import DisasterModel, DISASTER_GRID_SIZE
 from city_influence_kernel  import CityInfluenceModel
+from pathfind_kernel        import PathfindModel
+from unit_eval_kernel       import UnitEvalModel
 from storyteller            import Storyteller
 
 print("[ttlang-server] TT modules loaded.", flush=True)
@@ -136,18 +138,23 @@ def _make_map_tensor(flat_list: list, map_tiles: int, device) -> ttnn.Tensor:
 class TTLangServer:
 
     def __init__(self):
-        self.device     = None
-        self.storyteller = Storyteller()
-        self.disaster    = None  # initialised after device is open
-        self.city_model  = None  # initialised after device is open
+        self.device          = None
+        self.storyteller     = Storyteller()
+        self.disaster        = None   # initialised after device is open
+        self.city_model      = None   # initialised after device is open
+        self.pathfind_model  = None   # initialised after device is open
+        self.unit_eval_model = None   # initialised after device is open
+        self._last_pathfield = []     # cached for unit_eval to reuse same turn
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
     def open_device(self):
         print("[ttlang-server] Opening P300C device 0...", flush=True)
-        self.device   = ttnn.open_device(device_id=0)
-        self.disaster    = DisasterModel(self.device)
-        self.city_model  = CityInfluenceModel(self.device)
+        self.device          = ttnn.open_device(device_id=0)
+        self.disaster        = DisasterModel(self.device)
+        self.city_model      = CityInfluenceModel(self.device)
+        self.pathfind_model  = PathfindModel(self.device)
+        self.unit_eval_model = UnitEvalModel(self.device)
         print("[ttlang-server] Device open.", flush=True)
 
     def close_device(self):
@@ -164,11 +171,16 @@ class TTLangServer:
                              food=[1.0] * (32 * 64),
                              shields=[1.0] * (32 * 64),
                              trade=[1.0] * (32 * 64),
-                             turn=1)  # returns 4-tuple; discard during warm-up
+                             turn=1)  # also warms pathfind inside _tile_score
             self._terrain_event(32, 64, turn=1)
+            # Warm up unit_eval with a synthetic settler
+            dummy_units = [{'id': 1, 'tile': 0, 'is_settler': 1}]
+            dummy_pf    = [0.5] * (32 * 64)
+            self.unit_eval_model.evaluate(dummy_units, dummy_pf, 32, 64)
             # Skip gen_civs warm-up — sprite rendering takes minutes and is
             # only needed on-demand, not at server startup.
-        print("[ttlang-server] Warm-up complete. Kernels compiled and cached.", flush=True)
+        print("[ttlang-server] Warm-up complete. Kernels compiled and cached.",
+              flush=True)
 
     # ── terrain_gen ────────────────────────────────────────────────────────────
 
@@ -314,8 +326,29 @@ class TTLangServer:
         )
         final_scores = weather_blended * (1.0 + padded_disaster)
 
+        # ── Pathfinding pass: diffuse attractiveness from top tiles ──────────
+        # Uses smooth_height_map — same kernel as city_influence.
+        # This makes the tile cache a globally coherent landscape gradient so
+        # settlers far from good land are still guided in the right direction.
+        # PATHFIND_WEIGHT keeps the boost sub-dominant to base terrain quality.
+        PATHFIND_WEIGHT = 1.5   # attractiveness blends as ~15% of max base score
+        top10 = torch.topk(final_scores[:map_tiles], min(10, map_tiles)).indices.tolist()
+        t_pf  = time.perf_counter()
+        pathfield, pf_stats = self.pathfind_model.compute(top10, w, h)
+        ms_pathfind = (time.perf_counter() - t_pf) * 1000
+
+        pf_t = torch.tensor(
+            pathfield + [0.0] * max(0, final_scores.shape[0] - map_tiles),
+            dtype=torch.float32
+        )
+        final_scores = final_scores + PATHFIND_WEIGHT * pf_t
+
+        # Cache pathfield so unit_eval can reuse it this turn
+        self._last_pathfield = pathfield
+
+        kernel_ms += ms_weather + ms_disaster + ms_pathfind
+
         scores_flat = final_scores[:map_tiles].tolist()
-        kernel_ms  += ms_weather + ms_disaster
 
         # Dramatic console output every turn
         dom = weather_stats['dominant'].upper()
@@ -523,8 +556,8 @@ class TTLangServer:
                 scores, top, ms, weather_stats, d_active, d_epi = self._tile_score(
                     w, h, food, shields, trade, turn)
                 top3_scores = [round(scores[i], 2) for i in top[:3]]
-                print(f"  [SCORING  ] {w}x{h} map  4 TT passes  {ms:.2f}ms total"
-                      f"  top3={top3_scores}", flush=True)
+                print(f"  [SCORING  ] {w}x{h} map  6 TT passes  {ms:.2f}ms total"
+                      f"  top3={top3_scores}  (+pathfind)", flush=True)
                 # Convert flat tile indices to (col, row) coordinates for narrator
                 top_tiles_xy = [(i % w, i // w) for i in top[:5]]
                 self.storyteller.narrate_turn(turn, w, h, weather_stats, top_tiles_xy)
@@ -572,6 +605,24 @@ class TTLangServer:
                     "output_dir": out_path,
                     "kernel_ms":  tt_ms,
                 }
+
+            elif cmd == "unit_eval":
+                turn   = int(req.get("turn", 1))
+                units  = req.get("units", [])
+                # Reuse pathfield from the tile_score call that ran this same turn.
+                # If tile_score hasn't run yet (unusual), fall back to empty field.
+                pathfield = self._last_pathfield
+                if not pathfield:
+                    print("[ttlang-server] unit_eval: no pathfield cached "
+                          "(tile_score must run first)", flush=True)
+                    return {"status": "ok", "recommendations": [], "kernel_ms": 0.0}
+
+                recs, ms = self.unit_eval_model.evaluate(units, pathfield, w, h)
+                n_settlers = len([u for u in units if u.get('is_settler', 1)])
+                print(f"  [UNIT-EVAL] {n_settlers} settlers  "
+                      f"128 Tensix cores  {ms:.2f}ms  "
+                      f">> {len(recs)} recommendations", flush=True)
+                return {"status": "ok", "recommendations": recs, "kernel_ms": ms}
 
             elif cmd == "ping":
                 return {"status": "ok", "message": "pong"}
