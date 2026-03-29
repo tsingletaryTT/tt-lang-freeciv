@@ -452,11 +452,13 @@ class TTLangServer:
 
         result = ttnn.to_torch(out_t).float()  # (side × side), values 0-1000
 
-        # Threshold: top ~15% of tiles get a resource (value > 700).
+        # Threshold: top ~10% of tiles get a resource (value > 800).
         # scale_height_map passthrough keeps values in [0, 1000].
-        # Lower threshold than the originally planned 900 so small maps (~1000 tiles)
-        # still see several events per turn.
-        threshold = 700.0
+        # The C side applies an additional ecological filter (coastal for Fish,
+        # hills for Gold/Coal, etc.) so the raw event count can be generous
+        # without saturating the map — but keeping it at 800 avoids blanketing
+        # all water with Fish on every Fish turn.
+        threshold = 800.0
         extra_name = EVENT_EXTRAS[turn % len(EVENT_EXTRAS)]
 
         events = []
