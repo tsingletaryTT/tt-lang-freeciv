@@ -179,9 +179,9 @@ class CityProdModel:
         kernel_ms = (time.perf_counter() - t0) * 1000
 
         # ── CPU: argmax across categories → recommendation per city ────────
-        mil_flat = ttnn.to_torch(mil_score).reshape(-1).float()[:n_cities]
-        grw_flat = ttnn.to_torch(grw_score).reshape(-1).float()[:n_cities]
-        sci_flat = ttnn.to_torch(sci_score).reshape(-1).float()[:n_cities]
+        mil_flat = mil_score.reshape(-1).float()[:n_cities]
+        grw_flat = grw_score.reshape(-1).float()[:n_cities]
+        sci_flat = sci_score.reshape(-1).float()[:n_cities]
 
         recommendations = []
         for i, c in enumerate(cities):
@@ -202,15 +202,16 @@ class CityProdModel:
 
     # ── Internal helpers ───────────────────────────────────────────────────────
 
-    def _eltwise_add(self, a: torch.Tensor, b: torch.Tensor) -> ttnn.Tensor:
-        """One smooth_height_map (eltwise-add) pass on TT hardware."""
+    def _eltwise_add(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """One smooth_height_map (eltwise-add) pass on TT hardware.
+        Always returns a torch.Tensor so chained calls work correctly."""
         a_t  = ttnn.from_torch(a, dtype=ttnn.bfloat16,
                                layout=ttnn.TILE_LAYOUT, device=self.device)
         b_t  = ttnn.from_torch(b, dtype=ttnn.bfloat16,
                                layout=ttnn.TILE_LAYOUT, device=self.device)
         out  = zeros_like_on_device(a, self.device)
         smooth_height_map(a_t, b_t, out)
-        return out
+        return ttnn.to_torch(out)
 
 
 # ── Standalone test ────────────────────────────────────────────────────────────

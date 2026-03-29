@@ -117,11 +117,16 @@ tmux send-keys -t "$SESSION" \
          2>&1 | tee $FC_SERVER_LOG" Enter
 
 # Step 4: top-left → TT-Lang server (Pane 1)
+# Send 'source' as its own Enter-terminated command so it modifies the
+# foreground shell.  If it were chained with '&&' before '&', bash would
+# background the entire chain (including source) in a subshell, leaving the
+# foreground shell without the venv — so react_diffuse.py would fail to
+# import 'ttl'.
 tmux select-pane -t "$SESSION:1.1"
+tmux send-keys -t "$SESSION" "source $TTLANG_VENV" Enter
 tmux send-keys -t "$SESSION" \
-    "echo '=== TT-Lang Python Server + Gray-Scott Art ===' && \
-     source $TTLANG_VENV && \
-     python $TT_SERVER 2>&1 | tee $TT_SERVER_LOG &
+    "echo '=== TT-Lang Python Server ===' && \
+     python $TT_SERVER > $TT_SERVER_LOG 2>&1 & \
      sleep 14 && \
      echo '=== Starting Gray-Scott art kernel ===' && \
      python $REACT_KERNEL --preset coral --frames 9999 --steps 12 --out $ART_DIR" Enter
