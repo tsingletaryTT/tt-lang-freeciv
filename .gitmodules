@@ -1,0 +1,3 @@
+[submodule "freeciv"]
+	path = freeciv
+	url = git@github.com:tsingletaryTT/freeciv.git
