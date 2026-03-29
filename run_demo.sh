@@ -59,6 +59,8 @@ stop_demo() {
     pkill -f "freeciv-gtk3.22"  2>/dev/null || true
     pkill -f "feh.*tt_art"      2>/dev/null || true
     tmux kill-session -t "$SESSION" 2>/dev/null || true
+    sleep 1
+    tt-smi -r 2>/dev/null || true
     echo "Stopped."
     exit 0
 }
@@ -71,11 +73,16 @@ fi
 
 check_prereqs
 
-# Kill stale processes before starting fresh
+# Kill stale processes and reset TT devices before starting fresh.
+# Previous crashes leave device handles open without close_device() being
+# called — tt-smi -r clears all chip locks so the new session starts clean.
 pkill -f ttlang_server.py 2>/dev/null || true
 pkill -f react_diffuse.py 2>/dev/null || true
 pkill -f "freeciv-server.*$FC_PORT" 2>/dev/null || true
 sleep 1
+echo "Resetting TT devices..."
+tt-smi -r 2>/dev/null || true
+sleep 2
 
 # ── Prep output directories ───────────────────────────────────────────────────
 mkdir -p "$ART_DIR"
@@ -129,7 +136,7 @@ tmux send-keys -t "$SESSION" \
      python $TT_SERVER > $TT_SERVER_LOG 2>&1 & \
      sleep 14 && \
      echo '=== Starting Gray-Scott art kernel ===' && \
-     python $REACT_KERNEL --preset coral --frames 9999 --steps 12 --out $ART_DIR" Enter
+     python $REACT_KERNEL --preset coral --frames 9999 --steps 12 --out $ART_DIR --device 1" Enter
 
 # ── Wait for warm-up + launch client ─────────────────────────────────────────
 echo "Starting TT-Lang server (warm-up ~12s)..."

@@ -248,6 +248,8 @@ def main():
                         help="Output directory for PNG frames")
     parser.add_argument("--all-presets", action="store_true",
                         help="Run all presets in sequence, 30 frames each")
+    parser.add_argument("--device", type=int, default=1,
+                        help="TT device ID (default: 1, keeps chip 0 free for ttlang_server)")
     args = parser.parse_args()
 
     out_dir = Path(args.out)
@@ -263,7 +265,7 @@ def main():
     print("=" * 64)
     print()
 
-    device = ttnn.open_device(device_id=0)
+    device = ttnn.open_device(device_id=args.device)
     try:
         # Warm up smooth_height_map kernel for this grid size
         print("Warming up TT kernels...")
